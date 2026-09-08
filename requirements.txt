@@ -1,0 +1,32 @@
+# Core training / evaluation
+torch>=2.2
+# Must match the installed torch minor (pip otherwise pulls torchaudio 2.11 next to torch 2.8).
+torchaudio>=2.2,<2.11
+numpy>=1.24
+pyyaml>=6.0
+soundfile>=0.12
+jiwer>=3.0,<4
+numpy>=1.24
+pyyaml>=6.0
+soundfile>=0.12
+jiwer>=3.0
+tqdm>=4.66
+editdistance>=0.6
+psutil>=5.9
+
+# Dataset.ET download
+datasets>=2.19
+huggingface_hub>=0.23
+
+# Tokenizers
+sentencepiece>=0.2
+
+# Optional but used by evaluate.py if present
+pyctcdecode>=0.5
+# Python bindings for KenLM (needed when --decoder kenlm loads an ARPA/bin).
+# The lmplz trainer is separate: compile https://github.com/kpu/kenlm
+kenlm>=0.2.0
+
+# Export
+onnx>=1.16,<1.18
+onnxruntime>=1.18  # CPU. For CUDA: pip uninstall onnxruntime && pip install onnxruntime-gpu

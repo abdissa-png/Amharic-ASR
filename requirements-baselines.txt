@@ -1,0 +1,11 @@
+# Extra deps for E1 pretrained-model benchmarks.
+# Install on top of requirements.txt only when you run baselines.
+
+transformers>=4.40
+speechbrain>=1.0
+accelerate>=0.30
+librosa>=0.10
+
+# Omnilingual ASR (300M CTC teacher)
+# pip install omnilingual-asr
+# See: https://github.com/facebookresearch/omnilingual-asr

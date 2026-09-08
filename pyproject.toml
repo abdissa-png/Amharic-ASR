@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "amharic-asr"
+version = "0.1.0"
+description = "Small offline Amharic ASR on Dataset.ET Amharic Speech v0.2.0"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+
+[tool.setuptools]
+py-modules = ["utils", "prepare_dataset", "train", "evaluate"]
+
+[tool.setuptools.packages.find]
+include = [
+  "data*",
+  "tokenizer*",
+  "models*",
+  "decoding*",
+  "evaluation*",
+  "phonology*",
+  "baselines*",
+  "deployment*",
+  "demo*",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+pythonpath = ["."]
