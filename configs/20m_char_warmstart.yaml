@@ -1,0 +1,43 @@
+# Phase 1: 4-layer shallow model to break through CTC alignment barrier.
+# Once this works (loss < 2, hyps contain real words), transfer weights
+# to the 12-layer model and continue with 20m_char.yaml.
+experiment: 20m_char_warmstart
+seed: 42
+sample_rate: 16000
+
+model:
+  name: conformer_ctc
+  d_model: 256
+  num_layers: 4
+  num_heads: 4
+  ffn_dim: 1024
+  conv_kernel_size: 31
+  dropout: 0.0
+  input_dim: 80
+
+tokenizer:
+  type: char
+
+train:
+  epochs: 80
+  lr: 1.0e-3
+  min_lr: 8.0e-4
+  warmup_steps: 50
+  cmvn: true
+  max_train_utts: 200
+  inter_ctc_weight: 0.0
+  weight_decay: 0.0
+  grad_clip: 5.0
+  grad_accum: 1
+  precision: bf16
+  batch_seconds: 80
+  eval_batch_size: 8
+  num_workers: 4
+  specaug: false
+  speed_perturb: [1.0]
+  trim_silence: false
+  early_stopping_patience: 40
+
+paths:
+  metadata_dir: metadata
+  exp_dir: exp/20m_char_warmstart

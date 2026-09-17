@@ -1,0 +1,43 @@
+# Phase 1: form CTC alignments on a small subset.
+# Key: dropout=0, small set, constant-ish LR, no augmentation.
+# Once dev hyps contain real words, switch to 20m_char.yaml with --resume.
+experiment: 20m_char_subset
+seed: 42
+sample_rate: 16000
+
+model:
+  name: conformer_ctc
+  d_model: 256
+  num_layers: 12
+  num_heads: 4
+  ffn_dim: 1024
+  conv_kernel_size: 31
+  dropout: 0.0
+  input_dim: 80
+
+tokenizer:
+  type: char
+
+train:
+  epochs: 60
+  lr: 5.0e-4
+  min_lr: 3.0e-4
+  warmup_steps: 100
+  cmvn: true
+  max_train_utts: 500
+  inter_ctc_weight: 0.0
+  weight_decay: 0.0
+  grad_clip: 5.0
+  grad_accum: 1
+  precision: bf16
+  batch_seconds: 80
+  eval_batch_size: 8
+  num_workers: 4
+  specaug: false
+  speed_perturb: [1.0]
+  trim_silence: false
+  early_stopping_patience: 30
+
+paths:
+  metadata_dir: metadata
+  exp_dir: exp/20m_char_subset
