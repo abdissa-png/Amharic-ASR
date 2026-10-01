@@ -1,0 +1,49 @@
+# Phase 2: 4-layer model on ALL data with regularisation.
+# Initialise from the warm-started 200-clip model to skip the alignment barrier:
+#   python train.py --config configs/20m_char_4layer.yaml \
+#       --init-from exp/20m_char_warmstart/best.pt
+#
+# OR train from scratch (4 layers cross the barrier more easily):
+#   python train.py --config configs/20m_char_4layer.yaml
+
+experiment: 20m_char_4layer
+seed: 42
+sample_rate: 16000
+
+model:
+  name: conformer_ctc
+  d_model: 256
+  num_layers: 4
+  num_heads: 4
+  ffn_dim: 1024
+  conv_kernel_size: 31
+  dropout: 0.1
+  input_dim: 80
+
+tokenizer:
+  type: char
+
+train:
+  epochs: 60
+  lr: 1.0e-3
+  min_lr: 1.0e-5
+  warmup_steps: 500
+  cmvn: true
+  inter_ctc_weight: 0.0
+  weight_decay: 0.01
+  grad_clip: 5.0
+  grad_accum: 1
+  precision: bf16  # auto-falls back to fp16 on T4 (no BF16 tensor cores)
+  batch_seconds: 80  # do not raise mid-resume (changes steps/epoch vs frozen cosine). New run: 160.
+  eval_batch_size: 24
+  num_workers: 8
+  prefetch_factor: 4
+  specaug: true
+  specaug_start_epoch: 5
+  speed_perturb: [0.9, 1.0, 1.1]
+  trim_silence: false
+  early_stopping_patience: 10
+
+paths:
+  metadata_dir: metadata
+  exp_dir: exp/20m_char_4layer
