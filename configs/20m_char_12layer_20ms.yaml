@@ -1,0 +1,102 @@
+# 12-layer character CTC on a 20 ms grid.
+# subsample_factor 2 keeps the 4× front-end's two convs but the second
+# strides frequency only, so the Conformer and the CTC head run at 20 ms:
+# a short word is ~25 frames under a single 15-tap kernel (~300 ms) instead
+# of ~12 frames under a 31-tap kernel on a 40 ms grid. Layer norm in the
+# conv block goes with that.
+#
+# Starts from the 4× pool model. Every tensor has the same shape (the three
+# depthwise branches fold into the one 15-tap filter, batch-norm affine
+# weights seed the layer norm), so nothing starts random. The function is
+# not preserved, though: every kernel and relative offset now spans half the
+# time, and layer norm is not batch norm. The temporal layers have to be
+# relearned, so this needs a full anneal like the pool run, not a fine-tune.
+# The pool run was flat for 8 epochs at high lr and gained 5 WER points only
+# while the cosine decayed; a 100-epoch cosine never leaves peak lr.
+#
+# att_context_size 128 is ±2.56 s. ±640 ms (32) cut the pool model's global
+# attention to about one word. Blocked attention keeps the cost linear.
+#
+# Clips over max_duration are dropped, not cut (a cut clip keeps its full
+# transcript). Continue an interrupted run with --resume; init_from restarts
+# the schedule and overwrites best.pt at epoch 1.
+#
+# Train on metadata/pool_clean: screen_pairs drops clips whose audio does not
+# match the transcript and stores word timings. short_crop then replaces 15%
+# of batches' clips with 1–3 of their words, which is the only way this model
+# sees the short utterances the demo has to decode.
+#
+#   python -m data.screen_pairs --config configs/20m_char_12layer_pool.yaml \
+#       --ckpt exp/20m_char_12layer_pool/best.pt \
+#       --metadata-dir metadata/pool --splits train \
+#       --out-dir metadata/pool_clean
+#   python train.py --config configs/20m_char_12layer_20ms.yaml
+
+experiment: 20m_char_12layer_20ms_v2
+seed: 42
+sample_rate: 16000
+
+model:
+  name: conformer_ctc
+  d_model: 256
+  num_layers: 12
+  num_heads: 4
+  ffn_dim: 1024
+  conv_kernel_size: 15
+  conv_norm: layer_norm
+  dropout: 0.1
+  input_dim: 80
+  pos_encoding: rel
+  subsample_factor: 2
+  att_context_size: 128
+
+tokenizer:
+  type: char
+
+train:
+  # ~6.4k steps/epoch at batch_seconds 100, so 18 epochs is ~115k steps.
+  epochs: 18
+  lr: 5.0e-4
+  min_lr: 1.0e-5
+  warmup_steps: 4000
+  cmvn: true
+  inter_ctc_weight: 0.3
+  weight_decay: 0.01
+  grad_clip: 5.0
+  grad_accum: 1
+  precision: bf16
+  # Duration batching gives a new shape almost every step; cuDNN's per-shape
+  # setup dominated fp16 steps on a T4 (see 50m_char_12layer_20ms.yaml).
+  cudnn: false
+  batch_seconds: 100
+  eval_batch_size: 8
+  num_workers: 4
+  prefetch_factor: 4
+  specaug: true
+  specaug_start_epoch: 1
+  speed_perturb: [0.9, 1.0, 1.1]
+  trim_silence: false
+  max_duration: 40
+  early_stopping_patience: 8
+  # Needs word_times from data.screen_pairs. A tight tail ends just after the
+  # last word, so the model learns a clip can stop there.
+  short_crop:
+    prob: 0.15
+    min_words: 1
+    max_words: 3
+    tight_tail_prob: 0.35
+  augment:
+    gain_db: [-35, -15]
+    noise_prob: 0.5
+    noise_snr_db: [5, 20]
+    noise_dir: data/noise
+    rir_prob: 0.3
+    rir_dir: data/rir
+    codec_prob: 0.2
+    codec: phone
+    synthetic_if_empty: true
+
+paths:
+  metadata_dir: metadata/pool_clean
+  exp_dir: exp/20m_char_12layer_20ms_v2
+  init_from: exp/20m_char_12layer_pool/best.pt

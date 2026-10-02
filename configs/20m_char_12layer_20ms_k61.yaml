@@ -1,0 +1,79 @@
+# 12-layer character CTC on a 20 ms grid with a 61-tap depthwise kernel.
+# 61 taps at 20 ms span 1.22 s, the same time as the pool model's 31-tap
+# branch at 40 ms. Loading the pool checkpoint stretches the averaged
+# 9/15/31 impulse onto that grid (a tap is inserted between each donor tap).
+# Leaving the kernel at 31 keeps those coefficients but plays them in half
+# the time, 620 ms.
+#
+# The rest matches configs/20m_char_12layer_20ms.yaml: layer norm, relative
+# attention at ±128 frames (±2.56 s), and the 18-epoch cosine. Its own
+# folder leaves the 31-tap run in exp/20m_char_12layer_20ms_v2 alone.
+# Continue an interrupted run with --resume; init_from restarts the schedule
+# and overwrites best.pt at epoch 1.
+#
+#   python train.py --config configs/20m_char_12layer_20ms_k61.yaml
+
+experiment: 20m_char_12layer_20ms_k61
+seed: 42
+sample_rate: 16000
+
+model:
+  name: conformer_ctc
+  d_model: 256
+  num_layers: 12
+  num_heads: 4
+  ffn_dim: 1024
+  conv_kernel_size: 61
+  conv_norm: layer_norm
+  dropout: 0.1
+  input_dim: 80
+  pos_encoding: rel
+  subsample_factor: 2
+  att_context_size: 128
+
+tokenizer:
+  type: char
+
+train:
+  # ~5k steps/epoch at batch_seconds 100, so 18 epochs reaches min_lr.
+  epochs: 18
+  lr: 5.0e-4
+  min_lr: 1.0e-5
+  warmup_steps: 4000
+  cmvn: true
+  inter_ctc_weight: 0.3
+  weight_decay: 0.01
+  grad_clip: 5.0
+  grad_accum: 1
+  precision: bf16
+  cudnn: false
+  batch_seconds: 100
+  eval_batch_size: 8
+  num_workers: 4
+  prefetch_factor: 4
+  specaug: true
+  specaug_start_epoch: 1
+  speed_perturb: [0.9, 1.0, 1.1]
+  trim_silence: false
+  max_duration: 40
+  early_stopping_patience: 8
+  short_crop:
+    prob: 0.15
+    min_words: 1
+    max_words: 3
+    tight_tail_prob: 0.35
+  augment:
+    gain_db: [-35, -15]
+    noise_prob: 0.5
+    noise_snr_db: [5, 20]
+    noise_dir: data/noise
+    rir_prob: 0.3
+    rir_dir: data/rir
+    codec_prob: 0.2
+    codec: phone
+    synthetic_if_empty: true
+
+paths:
+  metadata_dir: metadata/pool_clean
+  exp_dir: exp/20m_char_12layer_20ms_k61
+  init_from: exp/20m_char_12layer_pool/best.pt

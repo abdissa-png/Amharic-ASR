@@ -1,0 +1,79 @@
+# Fine-tune the 4× pool model on cleaned data and short crops.
+# Same encoder as 20m_char_12layer_pool (40 ms, kernels 9/15/31, global
+# relative attention). The 20 ms run had to relearn every temporal layer
+# and was still at 43% Dataset.ET dev WER after three epochs; this run
+# starts from that model's 28.5% and only has to learn 1–3 word clips and
+# a last word with no trailing context.
+#
+# Peak 1.5e-4 is 30% of the pool training peak. Six epochs at ~6k
+# steps/epoch is ~36k steps, so the cosine actually reaches min_lr.
+# Warmup is a quarter of the first epoch so the new crops are not at
+# peak lr immediately. Writes to a new folder so the pool checkpoint
+# is left alone. Continue an interrupted run with --resume.
+#
+#   python train.py --config configs/20m_char_12layer_pool_short.yaml
+
+experiment: 20m_char_12layer_pool_short
+seed: 42
+sample_rate: 16000
+
+model:
+  name: conformer_ctc
+  d_model: 256
+  num_layers: 12
+  num_heads: 4
+  ffn_dim: 1024
+  conv_kernel_size: [9, 15, 31]
+  dropout: 0.1
+  input_dim: 80
+  pos_encoding: rel
+
+tokenizer:
+  type: char
+
+train:
+  epochs: 6
+  lr: 1.5e-4
+  min_lr: 1.0e-5
+  warmup_steps: 1500
+  cmvn: true
+  inter_ctc_weight: 0.3
+  weight_decay: 0.01
+  grad_clip: 5.0
+  grad_accum: 1
+  precision: bf16
+  # Duration batching changes the shape almost every step. On a T4 in fp16,
+  # cuDNN's per-shape setup dominated the step (see 20m_char_12layer_20ms.yaml).
+  cudnn: false
+  # 40 ms frames use about half the activation memory of the 20 ms run, which
+  # filled ~10 GB at batch_seconds 100. 160 keeps the same T4 busy.
+  batch_seconds: 160
+  eval_batch_size: 16
+  num_workers: 4
+  prefetch_factor: 4
+  specaug: true
+  specaug_start_epoch: 1
+  speed_perturb: [0.9, 1.0, 1.1]
+  trim_silence: false
+  max_duration: 90
+  early_stopping_patience: 3
+  short_crop:
+    prob: 0.15
+    min_words: 1
+    max_words: 3
+    tight_tail_prob: 0.35
+  augment:
+    gain_db: [-35, -15]
+    noise_prob: 0.5
+    noise_snr_db: [5, 20]
+    noise_dir: data/noise
+    rir_prob: 0.3
+    rir_dir: data/rir
+    codec_prob: 0.2
+    codec: phone
+    synthetic_if_empty: true
+
+paths:
+  metadata_dir: metadata/pool_clean
+  exp_dir: exp/20m_char_12layer_pool_short
+  init_from: exp/20m_char_12layer_pool/best.pt

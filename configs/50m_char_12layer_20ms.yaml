@@ -1,0 +1,82 @@
+# 12-layer character CTC on a 20 ms grid, at the 50M width.
+# Same front-end as 20m_char_12layer_20ms (frequency-only second conv,
+# kernel 15, layer norm, ±640 ms attention). Width matches
+# 50m_char_12layer_pool: d_model 384, 6 heads, FFN 1536.
+#
+# Starts from the 4× 50M pool model; every tensor transfers (see
+# 20m_char_12layer_20ms.yaml). Cold starts did not work: one with a
+# 2000-step warmup to 8e-4 blew up its activations (layer-11 attention
+# outputs past 16000), and one with a 12000-step warmup to 5e-4 was still
+# emitting only blanks after 8000 steps. Peak 4e-4 is half the pool's
+# own; early stopping halts after 15 epochs without a better dev WER.
+#
+# On a T4, train.py runs bf16 as fp16: bench_amp.py measured a training
+# step 2.6× faster in fp16 there. cudnn is off because duration batching
+# gives a new shape almost every step, and cuDNN's per-shape setup made an
+# fp16 step 2.1 s instead of 0.45 s (bench_amp.py --vary 30 --no-cudnn).
+# Past 128 encoder frames the ±32-frame attention is computed in 64-frame
+# query blocks, never as a T×T matrix.
+# Dev is forward-only, so eval_batch_size 8 stays. If a 40 s clip touches
+# the 16 GB line, drop batch_seconds to 40.
+#
+#   python -m data.prepare_pool
+#   python train.py --config configs/50m_char_12layer_20ms.yaml
+
+experiment: 50m_char_12layer_20ms
+seed: 42
+sample_rate: 16000
+
+model:
+  name: conformer_ctc
+  d_model: 384
+  num_layers: 12
+  num_heads: 6
+  ffn_dim: 1536
+  conv_kernel_size: 15
+  conv_norm: layer_norm
+  dropout: 0.15
+  input_dim: 80
+  pos_encoding: rel
+  subsample_factor: 2
+  att_context_size: 32
+
+tokenizer:
+  type: char
+
+train:
+  epochs: 100
+  lr: 4.0e-4
+  min_lr: 1.0e-5
+  warmup_steps: 3000
+  cmvn: true
+  inter_ctc_weight: 0.3
+  weight_decay: 0.01
+  grad_clip: 5.0
+  grad_accum: 1
+  precision: bf16
+  cudnn: false
+  batch_seconds: 80
+  eval_batch_size: 8
+  num_workers: 4
+  prefetch_factor: 4
+  specaug: true
+  specaug_start_epoch: 3
+  speed_perturb: [0.9, 1.0, 1.1]
+  trim_silence: false
+  max_duration: 40
+  early_stopping_patience: 15
+  augment:
+    gain_db: [-35, -15]
+    noise_prob: 0.5
+    noise_snr_db: [5, 20]
+    noise_dir: data/noise
+    rir_prob: 0.3
+    rir_dir: data/rir
+    codec_prob: 0.2
+    codec: phone
+    synthetic_if_empty: true
+
+paths:
+  metadata_dir: metadata/pool
+  exp_dir: exp/50m_char_12layer_20ms
+  init_from: exp/50m_char_12layer_pool/best.pt

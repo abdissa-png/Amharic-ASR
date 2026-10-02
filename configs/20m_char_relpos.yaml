@@ -1,0 +1,52 @@
+# 12-layer character CTC with relative positional attention.
+# Promote this if ablation_4layer_relpos beats the 4-layer abs-PE baseline
+# on unseen-word WER, or run it now as the chapter-7 encoder swap.
+#
+# --init-from copies donor MHA in_proj/out_proj into relpos qkv/out.
+# pos_proj, u, v stay at init (the donor has no relative analogue).
+#
+#   python train.py --config configs/20m_char_relpos.yaml \
+#       --init-from exp/20m_char_12layer/best.pt
+
+experiment: 20m_char_relpos
+seed: 42
+sample_rate: 16000
+
+model:
+  name: conformer_ctc
+  d_model: 256
+  num_layers: 12
+  num_heads: 4
+  ffn_dim: 1024
+  conv_kernel_size: 31
+  dropout: 0.1
+  input_dim: 80
+  pos_encoding: rel
+
+tokenizer:
+  type: char
+
+train:
+  epochs: 100
+  lr: 1.0e-3
+  min_lr: 1.0e-5
+  warmup_steps: 1000
+  cmvn: true
+  inter_ctc_weight: 0.3
+  weight_decay: 0.01
+  grad_clip: 5.0
+  grad_accum: 1
+  precision: bf16
+  batch_seconds: 80
+  eval_batch_size: 16
+  num_workers: 4
+  prefetch_factor: 4
+  specaug: true
+  specaug_start_epoch: 3
+  speed_perturb: [0.9, 1.0, 1.1]
+  trim_silence: false
+  early_stopping_patience: 15
+
+paths:
+  metadata_dir: metadata
+  exp_dir: exp/20m_char_relpos

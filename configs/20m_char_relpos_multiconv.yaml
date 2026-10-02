@@ -1,0 +1,59 @@
+# Combined 12-layer shot: relative attention + parallel kernels 9/15/31,
+# warm-started from the trained character baseline.
+#
+# This confounds the two changes — that is fine as a "can we beat 12-layer
+# now" run. Keep the separate relpos and multiconv ablations to see which
+# knob (if either) actually moved unseen-word WER.
+#
+# Donor MHA in_proj/out_proj now maps onto relpos qkv/out, so content
+# attention is not random at step 0. pos_proj / u / v stay at init.
+# LR is lower than the from-scratch 12-layer recipe so the loaded
+# FFN / subsample / CTC head are not smashed. Tokenizer + CMVN are copied
+# from the donor exp; the 31-tap depthwise branch inherits the trained
+# filter, 9 and 15 start from its centre crop.
+#
+#   python train.py --config configs/20m_char_relpos_multiconv.yaml
+
+experiment: 20m_char_relpos_multiconv
+seed: 42
+sample_rate: 16000
+
+model:
+  name: conformer_ctc
+  d_model: 256
+  num_layers: 12
+  num_heads: 4
+  ffn_dim: 1024
+  conv_kernel_size: [9, 15, 31]
+  dropout: 0.1
+  input_dim: 80
+  pos_encoding: rel
+
+tokenizer:
+  type: char
+
+train:
+  epochs: 50
+  lr: 3.0e-4
+  min_lr: 1.0e-5
+  warmup_steps: 1000
+  cmvn: true
+  inter_ctc_weight: 0.3
+  weight_decay: 0.01
+  grad_clip: 5.0
+  grad_accum: 1
+  precision: bf16
+  batch_seconds: 80
+  eval_batch_size: 16
+  num_workers: 4
+  prefetch_factor: 4
+  specaug: true
+  specaug_start_epoch: 1
+  speed_perturb: [0.9, 1.0, 1.1]
+  trim_silence: false
+  early_stopping_patience: 12
+
+paths:
+  metadata_dir: metadata
+  exp_dir: exp/20m_char_relpos_multiconv
+  init_from: exp/20m_char_12layer/best.pt
