@@ -1,0 +1,85 @@
+# Pooled 12-layer at ~48M parameters: same data and augmentation as
+# 20m_char_12layer_pool, wider encoder (d_model 384, 6 heads, FFN 1536),
+# relative attention, kernels 9/15/31.
+#
+# No init_from. Every encoder tensor is wider than the 20M checkpoint, so
+# a warm start would load nothing. This run learns CTC alignment from
+# scratch on the pool.
+#
+# Schedule assumes ~500 h train and batch_seconds 80 (~23k steps/epoch).
+# 30 epochs is ~690k steps, against 16 for the 20M fine-tune: a cold model
+# needs the extra passes, and early stopping still watches Dataset.ET dev.
+# Peak 8e-4 sits between the 20M from-scratch 1e-3 and the 5e-4 fine-tune.
+# Warmup is ~12k steps, about half an epoch, so the first augmented
+# batches are not at peak lr. SpecAugment waits until epoch 3 so the
+# blank alignment can form. Dropout is 0.15. Weight decay stays 0.01.
+#
+# Keep batch_seconds at 80. The wider FFN and 6-head relative attention
+# use more activation memory than the 20M pool run, and a 90 s clip is
+# already a full batch. On a 48 GB L40, 160 is the first increase to try,
+# and warmup_steps should be cut by the same factor.
+#
+#   python prepare_dataset.py
+#   python -m data.prepare_fleurs --splits train validation test
+#   python -m data.prepare_alffa
+#   python -m data.prepare_bdu
+#   python -m data.prepare_leyu
+#   python -m data.prepare_aug_assets
+#   python -m data.prepare_pool
+#   python train.py --config configs/50m_char_12layer_pool.yaml
+
+experiment: 50m_char_12layer_pool
+seed: 42
+sample_rate: 16000
+
+model:
+  name: conformer_ctc
+  d_model: 384
+  num_layers: 12
+  num_heads: 6
+  ffn_dim: 1536
+  conv_kernel_size: [9, 15, 31]
+  dropout: 0.15
+  input_dim: 80
+  pos_encoding: rel
+
+tokenizer:
+  type: char
+
+train:
+  epochs: 30
+  lr: 8.0e-4
+  min_lr: 1.0e-5
+  warmup_steps: 12000
+  cmvn: true
+  inter_ctc_weight: 0.3
+  weight_decay: 0.01
+  grad_clip: 5.0
+  grad_accum: 1
+  precision: bf16
+  batch_seconds: 80
+  eval_batch_size: 8
+  num_workers: 4
+  prefetch_factor: 4
+  specaug: true
+  specaug_start_epoch: 3
+  speed_perturb: [0.9, 1.0, 1.1]
+  trim_silence: false
+  # Leyu clips run to ~80 s. The loader default of 30 s would keep the full
+  # transcript against a chopped prefix.
+  max_duration: 90
+  early_stopping_patience: 8
+  augment:
+    gain_db: [-35, -15]
+    noise_prob: 0.5
+    noise_snr_db: [5, 20]
+    noise_dir: data/noise
+    rir_prob: 0.3
+    rir_dir: data/rir
+    codec_prob: 0.2
+    codec: phone
+    synthetic_if_empty: true
+
+paths:
+  metadata_dir: metadata/pool
+  exp_dir: exp/50m_char_12layer_pool
