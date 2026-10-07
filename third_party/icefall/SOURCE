@@ -1,0 +1,80 @@
+Icefall commit 3f848bb6d0acc970c9b294a30ca0a04a7c9c78d1
+https://github.com/k2-fsa/icefall/tree/3f848bb6d0acc970c9b294a30ca0a04a7c9c78d1/egs/librispeech/ASR/zipformer
+
+The Python files under egs/librispeech/ASR/zipformer/ are the recipe files,
+unchanged, except encoder_interface.py. Icefall stores that path as a symlink
+to ../transducer_stateless/encoder_interface.py. The target file is copied
+here so this tree does not depend on the rest of the recipe.
+
+icefall/utils.py is not the full icefall module. It contains the functions
+this recipe imports (torch_autocast, make_pad_mask, add_sos, concat, time_warp,
+get_parameter_groups_with_lrs, create_grad_scaler), copied from icefall/utils.py
+at the same commit. Line ranges are marked in the file.
+
+How the training script uses them, all in egs/librispeech/ASR/zipformer/train.py:
+
+  get_encoder_embed   Conv2dSubsampling, 2x, so 10 ms frames become 20 ms
+  get_encoder_model   Zipformer2, output_downsampling_factor=2 (40 ms at the joiner)
+  get_decoder_model   stateless Decoder (embedding + Conv1d, context_size 2)
+  get_joiner_model    Joiner
+  get_model           AsrModel with use_transducer and use_ctc
+  compute_loss        simple_loss warmup, pruned RNN-T, ctc_loss_scale
+  ScaledAdam          clipping_scale 2.0, base_lr 0.045
+  Eden                lr_batches 7500, lr_epochs 3.5, warmup_start 0.1
+                      warmup_batches stays at the Eden default of 500
+
+The small streaming shape is Zipformer-S from the paper, Table 1
+(https://arxiv.org/abs/2310.11230), and the streaming export flags in
+onnx_pretrained_ctc_HLG_streaming.py:
+
+  num-encoder-layers  2,2,2,2,2,2
+  encoder-dim         192,256,256,256,256,256
+  feedforward-dim     512,768,768,768,768,768
+  num-heads           4,4,4,8,4,4
+  encoder-unmasked-dim 192,192,192,192,192,192
+  downsampling-factor 1,2,4,8,4,2
+  cnn-module-kernel   31,31,15,15,15,31
+  causal              1
+  chunk-size          16,32,64,-1     at the 50 Hz embed rate (320 / 640 / 1280 ms)
+  left-context-frames 128,256,-1
+
+left-context-frames 64 is in the icefall default list. Zipformer2._get_attn_mask
+rejects it with these kernels: the 8x stack needs
+chunk * left_chunks >= (31 // 2) * 8 = 120 frames. 64 never clears that.
+The published streaming decode (RESULTS.md, chunk 16, left 128) does.
+
+Dev transcripts use greedy_search_batch from
+egs/librispeech/ASR/pruned_transducer_stateless2/beam_search.py
+(the zipformer/beam_search.py symlink target). decode.py calls it when
+--decoding-method greedy_search and --max-sym-per-frame 1. The function is
+copied into decoding/zipformer_greedy.py.
+
+k2 supplies Swoosh and the pruned RNN-T kernels (k2.rnnt_loss_smoothed,
+k2.get_rnnt_prune_ranges, k2.do_rnnt_pruning, k2.rnnt_loss_pruned).
+This machine is torch 2.7.1+cu126, CPython 3.11. Matching wheel:
+
+https://huggingface.co/csukuangfj2/k2/resolve/main/ubuntu-cuda/1.24.4.dev20260625/k2-1.24.4.dev20260625+cuda12.6.torch2.7.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+
+lhotse is imported by model.py (SpecAugment) and optim.py (fix_random_seed).
+The standard run does not turn on consistency-regularized CTC, so SpecAugment
+is applied in train_zipformer.py with the mask sizes from get_spec_augment.
+
+Local edits that remove host syncs and per-step Python (the losses and the
+updates are the same; bench_zipformer.py measures them):
+
+  scaling.py   WhiteningPenaltyFunction.backward picks the penalty with
+               torch.where instead of `if metric < limit`. Whiten.prob follows
+               the result one step late, read in snapshot_schedule from a
+               pinned copy. fill_scalar writes schedule buffers only when the
+               value changes.
+  zipformer.py snapshot_schedules caches its module list; the snapshot fills
+               go through fill_scalar.
+  subsampling.py, model.py
+               the x_lens.max() and encoder_out_lens > 0 asserts run only in
+               eval. train_zipformer.py checks lengths on the CPU.
+  model.py     make_pad_mask gets the padded width, so it does not read
+               lengths.max().
+  icefall/utils.py
+               make_pad_mask reads lengths.max() only when max_len is not given.
+  optim.py     the clipping sum starts from torch.zeros, not torch.tensor(0.0),
+               which is a blocking host-to-device copy.

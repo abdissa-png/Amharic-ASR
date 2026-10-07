@@ -1,0 +1,9 @@
+# Extra packages for train_zipformer.py. The Conformer CTC runs do not need these.
+#
+# lhotse is imported by the vendored icefall model.py and optim.py.
+lhotse>=1.24
+
+# k2 wheels are tied to the Python ABI, the torch version, and CUDA.
+# Do not install a cp311 wheel on another Python: pip rejects it.
+# If `import k2` fails, the vendored icefall.utils raises with the wheel URL
+# that matches this interpreter. The index is https://k2-fsa.github.io/k2/cuda.html
