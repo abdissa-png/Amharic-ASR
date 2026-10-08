@@ -1,0 +1,96 @@
+# Zipformer-S streaming, from scratch, on Dataset.ET (42 h).
+#
+# The modules are icefall's, not the zipformer: true U-Net flag in
+# models/conformer.py. Commit and file map: third_party/icefall/SOURCE.
+#
+# Shape is Zipformer-S (Yao et al., arXiv 2310.11230, Table 1) with the
+# streaming flags from egs/librispeech/ASR/zipformer/train.py and the
+# small streaming export (onnx_pretrained_ctc_HLG_streaming.py):
+#   layers 2,2,2,2,2,2
+#   dims  192,256,256,256,256,256
+#   ff    512,768,768,768,768,768
+#   heads 4,4,4,8,4,4
+#   down  1,2,4,8,4,2 after the 2x conv embed, then another 2x at the output
+#         so the joiner and CTC head run at 40 ms
+#   causal chunks 16,32,64,-1 at the 50 Hz embed (320 / 640 / 1280 ms, or full)
+#
+# left-context-frames 64 is in the icefall default list. Zipformer2 rejects
+# it here: the 8x stack needs chunk * left_chunks >= (31 // 2) * 8 = 120.
+# The published streaming decode uses left context 128 with chunk 16.
+#
+# Loss is compute_loss from that train.py: simple transducer, pruned
+# transducer (k2), and CTC at scale 0.2. The label side is the stateless
+# Conv1d decoder, context 2. Optimizer is ScaledAdam + Eden, base_lr 0.045.
+#
+#   python train_zipformer.py --config configs/zipformer_s_streaming_et.yaml
+#
+# Needs k2 and lhotse. See requirements-zipformer.txt.
+
+experiment: zipformer_s_streaming_et
+seed: 42
+sample_rate: 16000
+
+model:
+  name: zipformer_s_streaming
+  input_dim: 80
+  num_encoder_layers: [2, 2, 2, 2, 2, 2]
+  downsampling_factor: [1, 2, 4, 8, 4, 2]
+  encoder_dim: [192, 256, 256, 256, 256, 256]
+  feedforward_dim: [512, 768, 768, 768, 768, 768]
+  num_heads: [4, 4, 4, 8, 4, 4]
+  encoder_unmasked_dim: [192, 192, 192, 192, 192, 192]
+  query_head_dim: 32
+  value_head_dim: 12
+  pos_head_dim: 4
+  pos_dim: 48
+  cnn_module_kernel: [31, 31, 15, 15, 15, 31]
+  decoder_dim: 512
+  joiner_dim: 512
+  context_size: 2
+  blank_id: 0
+  causal: true
+  chunk_size: [16, 32, 64, -1]
+  left_context_frames: [128, 256, -1]
+
+tokenizer:
+  type: char
+
+train:
+  epochs: 30
+  # ScaledAdam relative step size. icefall --base-lr 0.045. Not an AdamW 1e-3.
+  base_lr: 0.045
+  # Icefall's 7500 / 500 / warm_step 2000 are for a ~1000 s batch. These are
+  # scaled to batch_seconds 240 so the same amount of audio passes before
+  # the learning rate and the pruned-loss weight finish warming up.
+  lr_batches: 2500
+  lr_epochs: 3.5
+  warmup_batches: 170
+  warmup_start: 0.1
+  # Dropout schedules inside Zipformer2 count audio against this, via
+  # get_adjusted_batch_count. The recipe's reference batch is 600 s.
+  ref_duration: 600
+  warm_step: 670
+  simple_loss_scale: 0.5
+  ctc_loss_scale: 0.2
+  prune_range: 5
+  lm_scale: 0.25
+  am_scale: 0.0
+  cmvn: true
+  precision: fp16
+  cudnn: false
+  # 80 s of audio held ~3 GB on the first studio run. 240 s is still under a
+  # 16 GB card if memory scales with the audio; drop it if the step OOMs.
+  batch_seconds: 240
+  eval_batch_size: 8
+  num_workers: 4
+  prefetch_factor: 4
+  specaug: true
+  specaug_start_epoch: 1
+  speed_perturb: [0.9, 1.0, 1.1]
+  trim_silence: false
+  max_duration: 40
+  early_stopping_patience: 8
+
+paths:
+  metadata_dir: metadata
+  exp_dir: exp/zipformer_s_streaming_et

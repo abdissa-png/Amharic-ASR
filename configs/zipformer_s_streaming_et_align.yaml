@@ -1,0 +1,106 @@
+# Zipformer-S streaming, from scratch, on Dataset.ET (42 h).
+#
+# Same model as configs/zipformer_s_streaming_et.yaml. That run's loss mix is
+# the LibriSpeech BPE recipe: pruned RNN-T reaches full weight after about
+# one epoch (warm_step 670), the simple loss is 25% text-only (lm_scale
+# 0.25), CTC is 0.2, and the joiner is trained on 5 label positions per
+# frame. On character targets the joiner locked onto a frequent prefix
+# (በዚህም, then በተለይ, then በተ) and the loss flattened near 1.66 by epoch 3.
+#
+# This file keeps the full lattice in charge for about eight epochs, drops
+# the text-only term, raises CTC, and widens the joiner window. SpecAugment
+# starts the epoch after that ramp, which is how the from-scratch character
+# Conformers in this repo were trained. Architecture, optimizer, and batch
+# are unchanged.
+#
+# Launch this as a new run. Do not resume exp/zipformer_s_streaming_et.
+#
+#   python train_zipformer.py --config configs/zipformer_s_streaming_et_align.yaml
+
+experiment: zipformer_s_streaming_et_align
+seed: 42
+sample_rate: 16000
+
+model:
+  name: zipformer_s_streaming
+  input_dim: 80
+  num_encoder_layers: [2, 2, 2, 2, 2, 2]
+  downsampling_factor: [1, 2, 4, 8, 4, 2]
+  encoder_dim: [192, 256, 256, 256, 256, 256]
+  feedforward_dim: [512, 768, 768, 768, 768, 768]
+  num_heads: [4, 4, 4, 8, 4, 4]
+  encoder_unmasked_dim: [192, 192, 192, 192, 192, 192]
+  query_head_dim: 32
+  value_head_dim: 12
+  pos_head_dim: 4
+  pos_dim: 48
+  cnn_module_kernel: [31, 31, 15, 15, 15, 31]
+  decoder_dim: 512
+  joiner_dim: 512
+  context_size: 2
+  blank_id: 0
+  causal: true
+  chunk_size: [16, 32, 64, -1]
+  left_context_frames: [128, 256, -1]
+
+tokenizer:
+  type: char
+
+train:
+  epochs: 30
+  # ScaledAdam relative step size. icefall --base-lr 0.045. Not an AdamW 1e-3.
+  base_lr: 0.045
+  # Eden decays once batch and epoch pass these. 5000 batches is about
+  # eight epochs at batch_seconds 240 (~631 steps/epoch), so the step size
+  # stays near base_lr while the alignment is still forming. lr_epochs 8
+  # is Eden's own suggestion for a 20 to 40 epoch run.
+  lr_batches: 5000
+  lr_epochs: 8
+  warmup_batches: 170
+  warmup_start: 0.1
+  # Dropout schedules inside Zipformer2 count audio against this, via
+  # get_adjusted_batch_count. The recipe's reference batch is 600 s.
+  ref_duration: 600
+  # Simple loss anneals 1 → 0.5 and pruned loss anneals 0.1 → 1 over this
+  # many steps. 5000 finishes the ramp at the end of epoch 8. The previous
+  # run finished it at the end of epoch 1, and the joiner window froze on
+  # the first word.
+  warm_step: 5000
+  simple_loss_scale: 0.5
+  # CTC is the term that sees every character. 0.2 left it as a side loss
+  # while the pruned transducer dominated. 0.5 keeps the transducer in
+  # front once the ramp finishes.
+  ctc_loss_scale: 0.5
+  # Symbols per frame in k2.do_rnnt_pruning. 5 is the BPE default. A
+  # character sentence is several times longer, so the window is 15.
+  # Logits grow linearly with this; the 240 s step was using ~7 GB.
+  prune_range: 15
+  # lm_scale mixes the prediction network into the simple loss on its own,
+  # ignoring the encoder. That rewards a frequent word. 0 keeps the prune
+  # ranges on the joiner posterior. am_scale stays 0, as in the recipe.
+  lm_scale: 0.0
+  am_scale: 0.0
+  cmvn: true
+  precision: fp16
+  cudnn: false
+  # 80 s of audio held ~3 GB on the first studio run. 240 s is still under a
+  # 16 GB card if memory scales with the audio; drop it if the step OOMs.
+  batch_seconds: 240
+  eval_batch_size: 8
+  # CTC greedy is one argmax, the same dev check the Conformer runs use.
+  # The transducer walk runs on epochs 1, 5, 10, 15, 20, 25, and 30.
+  # best.pt follows the CTC number on the other epochs.
+  rnnt_decode_every: 5
+  num_workers: 4
+  prefetch_factor: 4
+  specaug: true
+  # Masks start once the prune ramp has finished.
+  specaug_start_epoch: 9
+  speed_perturb: [0.9, 1.0, 1.1]
+  trim_silence: false
+  max_duration: 40
+  early_stopping_patience: 8
+
+paths:
+  metadata_dir: metadata
+  exp_dir: exp/zipformer_s_streaming_et_align
