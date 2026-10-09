@@ -1,0 +1,81 @@
+# Zipformer-S streaming, from scratch, on the cleaned pool.
+#
+# Same model and the same loss as configs/zipformer_s_streaming_et.yaml.
+# The align config (longer warm_step, lm_scale 0, CTC 0.5, prune_range 15)
+# produced the same one-word hypothesis at epoch 1 while the pruned term
+# was still a side loss, so those knobs are not used here.
+#
+# Character CTC in this repo spends about 30 epochs crossing the alignment
+# barrier before transcripts mean anything (configs/20m_char_12layer.yaml).
+# Dataset.ET is 42 h of the same news lead-ins, which is why every clip
+# decoded to በዚህ / በተለይ. This run uses metadata/pool_clean instead, and it
+# does not load either ET checkpoint.
+#
+# early_stopping_patience counts epochs whose transducer WER is not a new
+# best. During the barrier that number sits near 100, so patience 8 would
+# stop the job around epoch 9. It is set equal to epochs.
+#
+#   python train_zipformer.py --config configs/zipformer_s_streaming_pool_scratch.yaml
+
+experiment: zipformer_s_streaming_pool_scratch
+seed: 42
+sample_rate: 16000
+
+model:
+  name: zipformer_s_streaming
+  input_dim: 80
+  num_encoder_layers: [2, 2, 2, 2, 2, 2]
+  downsampling_factor: [1, 2, 4, 8, 4, 2]
+  encoder_dim: [192, 256, 256, 256, 256, 256]
+  feedforward_dim: [512, 768, 768, 768, 768, 768]
+  num_heads: [4, 4, 4, 8, 4, 4]
+  encoder_unmasked_dim: [192, 192, 192, 192, 192, 192]
+  query_head_dim: 32
+  value_head_dim: 12
+  pos_head_dim: 4
+  pos_dim: 48
+  cnn_module_kernel: [31, 31, 15, 15, 15, 31]
+  decoder_dim: 512
+  joiner_dim: 512
+  context_size: 2
+  blank_id: 0
+  causal: true
+  chunk_size: [16, 32, 64, -1]
+  left_context_frames: [128, 256, -1]
+
+tokenizer:
+  type: char
+
+train:
+  epochs: 40
+  # ScaledAdam relative step size. icefall --base-lr 0.045. Not an AdamW 1e-3.
+  base_lr: 0.045
+  # Same Eden and loss scales as the ET run. Not the align-config values.
+  lr_batches: 2500
+  lr_epochs: 3.5
+  warmup_batches: 170
+  warmup_start: 0.1
+  ref_duration: 600
+  warm_step: 670
+  simple_loss_scale: 0.5
+  ctc_loss_scale: 0.2
+  prune_range: 5
+  lm_scale: 0.25
+  am_scale: 0.0
+  cmvn: true
+  precision: fp16
+  cudnn: false
+  batch_seconds: 240
+  eval_batch_size: 8
+  num_workers: 4
+  prefetch_factor: 4
+  specaug: true
+  specaug_start_epoch: 1
+  speed_perturb: [0.9, 1.0, 1.1]
+  trim_silence: false
+  max_duration: 40
+  early_stopping_patience: 40
+
+paths:
+  metadata_dir: metadata/pool_clean
+  exp_dir: exp/zipformer_s_streaming_pool_scratch

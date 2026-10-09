@@ -1,0 +1,96 @@
+# Continue the pool checkpoint on screened pool train plus Leyu train.
+# Dev stays Dataset.ET, so the logged CTC word error is comparable to 30.5%.
+# Score Leyu itself with eval_leyu.py. delay_penalty is 0.
+#
+# Resume the pool ScaledAdam. A fresh optimizer walked CTC word error from
+# 30.5% to 36% in one epoch. --resume sets the next epoch to 21, so
+# epochs 24 is four more passes. Leyu clips average 40 s and run to about
+# 80 s, so max_duration is 90 rather than the pool's 40. batch_seconds is
+# 120, not the pool's 240: a 90 s clip padded every other utterance in a
+# 240 s batch OOMs a 16 GB GPU on the backward pass. batch_seconds is the
+# padded size (count × longest clip), not the sum. Leave it at 120 on
+# resume: the dropout clock is step × batch_seconds.
+#
+#   python -m data.prepare_pool_leyu
+#   mkdir -p exp/zipformer_s_streaming_pool_leyu
+#   cp exp/zipformer_s_streaming_pool/tokenizer.json exp/zipformer_s_streaming_pool_leyu/
+#   cp exp/zipformer_s_streaming_pool/cmvn.pt exp/zipformer_s_streaming_pool_leyu/
+#   python train_zipformer.py \
+#     --config configs/zipformer_s_streaming_pool_leyu.yaml \
+#     --resume exp/zipformer_s_streaming_pool/best.pt
+
+experiment: zipformer_s_streaming_pool_leyu
+seed: 42
+sample_rate: 16000
+
+model:
+  name: zipformer_s_streaming
+  input_dim: 80
+  num_encoder_layers: [2, 2, 2, 2, 2, 2]
+  downsampling_factor: [1, 2, 4, 8, 4, 2]
+  encoder_dim: [192, 256, 256, 256, 256, 256]
+  feedforward_dim: [512, 768, 768, 768, 768, 768]
+  num_heads: [4, 4, 4, 8, 4, 4]
+  encoder_unmasked_dim: [192, 192, 192, 192, 192, 192]
+  query_head_dim: 32
+  value_head_dim: 12
+  pos_head_dim: 4
+  pos_dim: 48
+  cnn_module_kernel: [31, 31, 15, 15, 15, 31]
+  decoder_dim: 512
+  joiner_dim: 512
+  context_size: 2
+  blank_id: 0
+  causal: true
+  chunk_size: [16, 32, 64, -1]
+  left_context_frames: [128, 256, -1]
+
+tokenizer:
+  type: char
+
+train:
+  epochs: 24
+  base_lr: 0.01
+  lr_batches: 2500
+  lr_epochs: 3.5
+  warmup_batches: 2000
+  warmup_start: 0.1
+  ref_duration: 600
+  warm_step: 0
+  simple_loss_scale: 0.5
+  ctc_loss_scale: 0.5
+  prune_range: 15
+  lm_scale: 0.0
+  am_scale: 0.0
+  delay_penalty: 0.0
+  cmvn: true
+  precision: fp16
+  cudnn: false
+  batch_seconds: 120
+  eval_batch_size: 8
+  rnnt_decode_every: 1
+  num_workers: 4
+  prefetch_factor: 4
+  specaug: true
+  specaug_start_epoch: 1
+  speed_perturb: [0.9, 1.0, 1.1]
+  trim_silence: false
+  max_duration: 90
+  early_stopping_patience: 8
+  augment_start_epoch: 1
+  augment:
+    gain_db: false
+    gain_rel_db: [-12, 6]
+    gain_rel_prob: 0.5
+    noise_prob: 0.4
+    noise_snr_db: [10, 20]
+    noise_dir: data/noise
+    rir_prob: 0.25
+    rir_dir: data/rir
+    codec_prob: 0.15
+    codec: phone
+    synthetic_if_empty: true
+
+paths:
+  metadata_dir: metadata/pool_leyu
+  exp_dir: exp/zipformer_s_streaming_pool_leyu

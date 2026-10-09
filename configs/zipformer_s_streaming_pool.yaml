@@ -1,0 +1,109 @@
+# Stage 2. Same Zipformer-S streaming model as
+# configs/zipformer_s_streaming_et_align.yaml, started from that run's
+# best.pt, trained on metadata/pool_clean.
+#
+# This is a new ScaledAdam and a new Eden. warm_step is 0 so the loss
+# scales stay at their final values (simple 0.5, pruned 1) instead of
+# repeating the from-scratch warmup. CTC 0.5, prune_range 15 and lm_scale 0
+# are the values the align checkpoint finished on.
+#
+# The align run ended at lr 0.0078 with dev CTC WER still falling. base_lr
+# 0.01 is about 0.009 after warmup, so the fine-tune starts near there
+# instead of at 2x. When SpecAugment switched on at align epoch 9, dev CTC
+# WER went 67.9 -> 74.5 and took three epochs to recover, so the waveform
+# augmentation waits one clean epoch on the new data.
+#
+# The tokenizer is the stage-1 tokenizer. init_from copies tokenizer.json
+# and cmvn.pt into this exp dir. Characters that appear only in the pool
+# become <unk>. Features stay CMVN log-mel, so the checkpoint's input does
+# not change. Augmentation runs on the waveform before log_mel.
+#
+#   python -m data.prepare_pool
+#   python -m data.prepare_aug_assets
+#   python train_zipformer.py --config configs/zipformer_s_streaming_pool.yaml
+
+experiment: zipformer_s_streaming_pool
+seed: 42
+sample_rate: 16000
+
+model:
+  name: zipformer_s_streaming
+  input_dim: 80
+  num_encoder_layers: [2, 2, 2, 2, 2, 2]
+  downsampling_factor: [1, 2, 4, 8, 4, 2]
+  encoder_dim: [192, 256, 256, 256, 256, 256]
+  feedforward_dim: [512, 768, 768, 768, 768, 768]
+  num_heads: [4, 4, 4, 8, 4, 4]
+  encoder_unmasked_dim: [192, 192, 192, 192, 192, 192]
+  query_head_dim: 32
+  value_head_dim: 12
+  pos_head_dim: 4
+  pos_dim: 48
+  cnn_module_kernel: [31, 31, 15, 15, 15, 31]
+  decoder_dim: 512
+  joiner_dim: 512
+  context_size: 2
+  blank_id: 0
+  causal: true
+  chunk_size: [16, 32, 64, -1]
+  left_context_frames: [128, 256, -1]
+
+tokenizer:
+  type: char
+
+train:
+  epochs: 20
+  base_lr: 0.01
+  lr_batches: 2500
+  lr_epochs: 3.5
+  # About one epoch of a ~100 h pool at batch_seconds 240, so the fresh
+  # ScaledAdam state does not take full steps on the new corpora.
+  warmup_batches: 2000
+  warmup_start: 0.1
+  ref_duration: 600
+  warm_step: 0
+  simple_loss_scale: 0.5
+  ctc_loss_scale: 0.5
+  prune_range: 15
+  lm_scale: 0.0
+  am_scale: 0.0
+  cmvn: true
+  precision: fp16
+  # On the T4 studio cuDNN spends 12-29 ms of CPU per convolution call even
+  # with benchmark off: a 10 s batch took 7.6 s/step with the GPU 4% busy
+  # (bench_zipformer.py step --top 15). The align run trained with it off.
+  cudnn: false
+  batch_seconds: 240
+  eval_batch_size: 8
+  # Transducer greedy walk on epochs 1, 5, 10, 15, 20. best.pt and early
+  # stopping follow CTC WER on every epoch.
+  rnnt_decode_every: 5
+  num_workers: 4
+  prefetch_factor: 4
+  specaug: true
+  specaug_start_epoch: 1
+  speed_perturb: [0.9, 1.0, 1.1]
+  trim_silence: false
+  max_duration: 40
+  early_stopping_patience: 8
+  augment_start_epoch: 2
+  augment:
+    # gain_db sets an absolute RMS in dBFS and would move FLEURS (median
+    # -42 dBFS) and the other corpora off the level cmvn.pt was fit to.
+    # gain_rel_db scales each clip around its own level.
+    gain_db: false
+    gain_rel_db: [-12, 6]
+    gain_rel_prob: 0.5
+    noise_prob: 0.4
+    noise_snr_db: [10, 20]
+    noise_dir: data/noise
+    rir_prob: 0.25
+    rir_dir: data/rir
+    codec_prob: 0.15
+    codec: phone
+    synthetic_if_empty: true
+
+paths:
+  metadata_dir: metadata/pool_clean
+  exp_dir: exp/zipformer_s_streaming_pool
+  init_from: exp/zipformer_s_streaming_et_align/best.pt
