@@ -1,0 +1,91 @@
+# FastEmit finetune of exp/zipformer_s_streaming_pool/best.pt.
+# Separate exp dir so that checkpoint is not overwritten.
+#
+# delay_penalty is k2's early-emission term on both RNN-T losses
+# (https://github.com/k2-fsa/k2/issues/955). The sweep is 0.001, 0.004,
+# and 0.01, each in its own exp dir. Keep the run whose dev deletion
+# count falls and whose substitution count does not rise.
+#
+# A new ScaledAdam. base_lr stays near the pool's final lr (9.4e-4)
+# instead of the pool's 0.01 start. warm_step 0 keeps the finished
+# loss scales (simple 0.5, pruned 1, CTC 0.5). Augmentation stays on
+# from epoch 1 because the checkpoint already trained with it.
+#
+#   python train_zipformer.py --config configs/zipformer_s_streaming_pool_fastemit.yaml
+
+experiment: zipformer_s_streaming_pool_fastemit_004
+seed: 42
+sample_rate: 16000
+
+model:
+  name: zipformer_s_streaming
+  input_dim: 80
+  num_encoder_layers: [2, 2, 2, 2, 2, 2]
+  downsampling_factor: [1, 2, 4, 8, 4, 2]
+  encoder_dim: [192, 256, 256, 256, 256, 256]
+  feedforward_dim: [512, 768, 768, 768, 768, 768]
+  num_heads: [4, 4, 4, 8, 4, 4]
+  encoder_unmasked_dim: [192, 192, 192, 192, 192, 192]
+  query_head_dim: 32
+  value_head_dim: 12
+  pos_head_dim: 4
+  pos_dim: 48
+  cnn_module_kernel: [31, 31, 15, 15, 15, 31]
+  decoder_dim: 512
+  joiner_dim: 512
+  context_size: 2
+  blank_id: 0
+  causal: true
+  chunk_size: [16, 32, 64, -1]
+  left_context_frames: [128, 256, -1]
+
+tokenizer:
+  type: char
+
+train:
+  epochs: 2
+  base_lr: 0.0015
+  lr_batches: 8000
+  lr_epochs: 12
+  warmup_batches: 200
+  warmup_start: 0.5
+  ref_duration: 600
+  warm_step: 0
+  simple_loss_scale: 0.5
+  ctc_loss_scale: 0.5
+  prune_range: 15
+  lm_scale: 0.0
+  am_scale: 0.0
+  delay_penalty: 0.004
+  cmvn: true
+  precision: fp16
+  cudnn: false
+  batch_seconds: 240
+  eval_batch_size: 8
+  rnnt_decode_every: 1
+  num_workers: 4
+  prefetch_factor: 4
+  specaug: true
+  specaug_start_epoch: 1
+  speed_perturb: [0.9, 1.0, 1.1]
+  trim_silence: false
+  max_duration: 40
+  early_stopping_patience: 2
+  augment_start_epoch: 1
+  augment:
+    gain_db: false
+    gain_rel_db: [-12, 6]
+    gain_rel_prob: 0.5
+    noise_prob: 0.4
+    noise_snr_db: [10, 20]
+    noise_dir: data/noise
+    rir_prob: 0.25
+    rir_dir: data/rir
+    codec_prob: 0.15
+    codec: phone
+    synthetic_if_empty: true
+
+paths:
+  metadata_dir: metadata/pool_clean
+  exp_dir: exp/zipformer_s_streaming_pool_fastemit_004
+  init_from: exp/zipformer_s_streaming_pool/best.pt
