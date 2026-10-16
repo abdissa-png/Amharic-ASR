@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Amharic ASR</title>
+  <style>
+    :root { color-scheme: light; }
+    body {
+      font-family: ui-sans-serif, system-ui, sans-serif;
+      max-width: 42rem;
+      margin: 2rem auto;
+      padding: 0 1.25rem;
+      color: #111;
+      line-height: 1.45;
+    }
+    h1 { font-size: 1.35rem; margin: 0 0 0.35rem; }
+    p.sub { color: #555; margin: 0 0 1.25rem; }
+    label { display: block; font-size: 0.85rem; color: #444; margin: 0.75rem 0 0.3rem; }
+    select, button, input[type="file"] { font: inherit; }
+    select, .box {
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+      padding: 0.6rem 0.7rem;
+      background: #fff;
+    }
+    .row { display: flex; gap: 0.5rem; flex-wrap: wrap; margin: 0.85rem 0 1rem; }
+    button {
+      border: 0;
+      border-radius: 8px;
+      padding: 0.55rem 1rem;
+      cursor: pointer;
+      background: #111;
+      color: #fff;
+    }
+    button.secondary { background: #eee; color: #111; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .warn {
+      background: #fff6e5;
+      border: 1px solid #e6c98a;
+      border-radius: 8px;
+      padding: 0.7rem 0.85rem;
+      font-size: 0.9rem;
+      display: none;
+    }
+    .hyp { min-height: 3.2rem; white-space: pre-wrap; }
+    .status { font-size: 0.85rem; color: #666; }
+  </style>
+</head>
+<body>
+  <h1>Amharic ASR</h1>
+  <p class="sub">Laptop: record on <b>http://127.0.0.1:7860</b>. Phone on the same Wi-Fi: open the <b>https://</b> address on port 7860, accept the certificate warning once, then record.</p>
+  <div id="warn" class="warn"></div>
+
+  <label for="preset">Checkpoint</label>
+  <select id="preset"></select>
+  <div id="lm-wrap" style="display:none">
+    <label for="lm">Language model (CTC)</label>
+    <select id="lm"></select>
+  </div>
+
+  <div class="row">
+    <button id="rec" type="button">Start recording</button>
+    <button id="stop" class="secondary" type="button" disabled>Stop</button>
+  </div>
+  <label>Or upload wav / flac</label>
+  <input id="file" type="file" accept="audio/*,.wav,.flac,.mp3,.m4a,.aac,.ogg" />
+  <p class="status" id="clip"></p>
+
+  <label id="greedy-label">Greedy</label>
+  <div class="box hyp" id="greedy"></div>
+  <label id="kenlm-label">KenLM</label>
+  <div class="box hyp" id="kenlm"></div>
+  <p class="status" id="status"></p>
+
+    <script>
+    window.ASR_HTTPS = null;
+    /*ASR_BOOT*/
+    const $ = (id) => document.getElementById(id);
+    const warn = $("warn");
+    let recState = null;
+    let lastWav = null;
+    let streamSid = null;
+    let streamAcked = 0;
+
+    function showWarn(html) {
+      warn.style.display = "block";
+      warn.innerHTML = html;
+    }
+
+    function canMic() {
+      return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+    }
+
+    function mergeFloat32(chunks) {
+      let n = 0;
+      for (const c of chunks) n += c.length;
+      const out = new Float32Array(n);
+      let o = 0;
+      for (const c of chunks) { out.set(c, o); o += c.length; }
+      return out;
+    }
+
+    function encodeWav(float32, sampleRate) {
+      const n = float32.length;
+      const buf = new ArrayBuffer(44 + n * 2);
+      const v = new DataView(buf);
+      const w = (off, s) => { for (let i = 0; i < s.length; i++) v.setUint8(off + i, s.charCodeAt(i)); };
+      w(0, "RIFF"); v.setUint32(4, 36 + n * 2, true); w(8, "WAVE");
+      w(12, "fmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true);
+      v.setUint16(22, 1, true); v.setUint32(24, sampleRate, true);
+      v.setUint32(28, sampleRate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+      w(36, "data"); v.setUint32(40, n * 2, true);
+      let p = 44;
+      for (let i = 0; i < n; i++, p += 2) {
+        const s = Math.max(-1, Math.min(1, float32[i]));
+        v.setInt16(p, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+      }
+      return new Blob([buf], { type: "audio/wav" });
+    }
+
+    function showResult(j) {
+      if (j.greedy_label) $("greedy-label").textContent = j.greedy_label;
+      if (j.kenlm_label) $("kenlm-label").textContent = j.kenlm_label;
+      $("greedy").textContent = j.greedy || "";
+      if (j.has_lm) {
+        $("kenlm").textContent = j.kenlm || (j.pending ? "" : "(empty hypothesis)");
+      } else {
+        $("kenlm").textContent = j.lm_note || "(KenLM not loaded)";
+      }
+      $("status").textContent = j.status || "";
+    }
+
+    function lmQuery() {
+      const sel = $("lm");
+      return sel && sel.value ? "&lm=" + encodeURIComponent(sel.value) : "";
+    }
+
+    async function transcribe(blob) {
+      $("status").textContent = "Transcribing…";
+      $("greedy").textContent = "";
+      $("kenlm").textContent = "";
+      const r = await fetch("/transcribe?preset=" + encodeURIComponent($("preset").value) + lmQuery(), {
+        method: "POST",
+        headers: { "Content-Type": "audio/wav" },
+        body: blob,
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || r.statusText);
+      showResult(j);
+    }
+
+    const WORKLET_SRC = `
+      class RecProc extends AudioWorkletProcessor {
+        process(inputs) {
+          const ch = inputs[0] && inputs[0][0];
+          if (ch && ch.length) this.port.postMessage(ch.slice());
+          return true;
+        }
+      }
+      registerProcessor("rec-proc", RecProc);
+    `;
+
+    async function startRec() {
+      if (!canMic()) {
+        if (!window.isSecureContext && window.ASR_HTTPS) {
+          showWarn("Browsers hide the microphone on <code>http://192.168…</code>. Open <a href=\"" + window.ASR_HTTPS + "\">" + window.ASR_HTTPS + "</a>, tap Advanced → Proceed (the cert is self-signed), then record.");
+        } else {
+          showWarn("This window cannot access the microphone (<code>getUserMedia</code> is missing). Use Chrome or Firefox on <b>https://</b> or <b>http://127.0.0.1</b>.");
+        }
+        return;
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: { ideal: 1 },
+          sampleRate: { ideal: 16000 },
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+          voiceIsolation: false,
+          googEchoCancellation: false,
+          googNoiseSuppression: false,
+          googAutoGainControl: false,
+          googHighpassFilter: false,
+        },
+      });
+      const nativeSr = (stream.getAudioTracks()[0].getSettings().sampleRate) || 16000;
+      // 16 kHz makes each posted block a stable prefix. Browsers that reject
+      // the rate fall back to the device rate; the server holds back the
+      // resampler tail in that case.
+      let ctx;
+      try {
+        ctx = new AudioContext({ sampleRate: 16000, latencyHint: "interactive" });
+      } catch (_) {
+        ctx = new AudioContext({ sampleRate: nativeSr, latencyHint: "interactive" });
+      }
+      if (ctx.state === "suspended") await ctx.resume();
+      const src = ctx.createMediaStreamSource(stream);
+      const mute = ctx.createGain();
+      mute.gain.value = 0;
+      const chunks = [];
+      let node;
+      try {
+        const url = URL.createObjectURL(new Blob([WORKLET_SRC], { type: "application/javascript" }));
+        await ctx.audioWorklet.addModule(url);
+        URL.revokeObjectURL(url);
+        node = new AudioWorkletNode(ctx, "rec-proc");
+        node.port.onmessage = (e) => chunks.push(new Float32Array(e.data));
+        src.connect(node);
+        node.connect(mute);
+      } catch (_) {
+        node = ctx.createScriptProcessor(4096, 1, 1);
+        node.onaudioprocess = (e) => { chunks.push(new Float32Array(e.inputBuffer.getChannelData(0))); };
+        src.connect(node);
+        node.connect(mute);
+      }
+      mute.connect(ctx.destination);
+      recState = { stream, ctx, node, src, chunks };
+      streamSid = Math.random().toString(36).slice(2) + Date.now().toString(36);
+      streamAcked = 0;
+      $("rec").disabled = true;
+      $("stop").disabled = false;
+      $("greedy").textContent = "";
+      $("kenlm").textContent = "";
+      $("clip").textContent = "Recording…";
+      if (streamingPreset()) {
+        $("status").textContent = "Listening…";
+        streamTimer = setInterval(() => { pumpStream(); }, 250);
+      }
+    }
+
+    function streamingPreset() {
+      const p = presetMeta[$("preset").value];
+      return !!(p && p.streaming);
+    }
+
+    function pcmBody(view) {
+      const copy = new Float32Array(view.length);
+      copy.set(view);
+      return copy.buffer;
+    }
+
+    async function postStream(pcm, sr, final) {
+      const offset = streamAcked;
+      const piece = pcm.subarray(Math.min(offset, pcm.length));
+      if (!final && piece.length === 0) return null;
+      streamFlight = true;
+      try {
+        const q = "/stream?preset=" + encodeURIComponent($("preset").value)
+          + "&sr=" + sr
+          + "&sid=" + encodeURIComponent(streamSid)
+          + "&offset=" + offset
+          + (final ? "&final=1" : "")
+          + lmQuery();
+        const r = await fetch(q, {
+          method: "POST",
+          headers: { "Content-Type": "application/octet-stream" },
+          body: pcmBody(piece),
+        });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error || r.statusText);
+        if (typeof j.samples === "number") streamAcked = j.samples;
+        return j;
+      } finally {
+        streamFlight = false;
+      }
+    }
+
+    async function pumpStream() {
+      if (!recState || streamFlight || !streamingPreset()) return;
+      const sr = recState.ctx.sampleRate;
+      let n = 0;
+      for (const c of recState.chunks) n += c.length;
+      if (n <= streamAcked) return;
+      const pcm = mergeFloat32(recState.chunks);
+      try {
+        const j = await postStream(pcm, sr, false);
+        if (j && recState) showResult(j);
+      } catch (e) {
+        if (recState) $("status").textContent = String(e);
+      }
+    }
+
+    // Stop is usually pressed while the last syllable is still sounding, and a
+    // clip cut 0.1 s early loses its last word about a third of the time.
+    const STOP_TAIL_MS = 400;
+
+    let streamTimer = null;
+    let streamFlight = false;
+
+    async function stopRec() {
+      if (!recState) return;
+      if (streamTimer) { clearInterval(streamTimer); streamTimer = null; }
+      $("stop").disabled = true;
+      $("clip").textContent = "Finishing…";
+      await new Promise((r) => setTimeout(r, STOP_TAIL_MS));
+      const waitUntil = Date.now() + 8000;
+      while (streamFlight && Date.now() < waitUntil) {
+        await new Promise((r) => setTimeout(r, 30));
+      }
+      recState.node.disconnect();
+      recState.src.disconnect();
+      recState.stream.getTracks().forEach((t) => t.stop());
+      const sr = recState.ctx.sampleRate;
+      const pcm = mergeFloat32(recState.chunks);
+      await recState.ctx.close();
+      recState = null;
+      $("rec").disabled = false;
+      $("stop").disabled = true;
+      lastWav = encodeWav(pcm, sr);
+      $("clip").textContent = (pcm.length / sr).toFixed(1) + "s recorded";
+      try {
+        if (streamingPreset()) {
+          const j = await postStream(pcm, sr, true);
+          if (j) showResult(j);
+        } else {
+          await transcribe(lastWav);
+        }
+      }
+      catch (e) { $("status").textContent = String(e); }
+    }
+
+    $("rec").onclick = () => startRec().catch((e) => showWarn(String(e)));
+    $("stop").onclick = () => stopRec();
+    $("file").onchange = async (e) => {
+      const f = e.target.files && e.target.files[0];
+      if (!f) return;
+      $("clip").textContent = f.name;
+      try { await transcribe(f); }
+      catch (err) { $("status").textContent = String(err); }
+    };
+
+    const presetMeta = {};
+    const LM_LABELS = {
+      none: "None (greedy CTC)",
+      word: "Word GPAC 5-gram",
+      char: "Character GPAC 6-gram",
+    };
+    function applyLabels(p) {
+      if (!p) return;
+      $("greedy-label").textContent = p.primary_label || "Greedy";
+      const lm = $("lm").value;
+      if (lm === "char") $("kenlm-label").textContent = "CTC + char LM";
+      else if (lm === "word") $("kenlm-label").textContent = "CTC + word LM";
+      else $("kenlm-label").textContent = p.secondary_label || "KenLM";
+    }
+    function syncLmOptions() {
+      const p = presetMeta[$("preset").value];
+      const wrap = $("lm-wrap");
+      const sel = $("lm");
+      const lms = (p && p.lms) || ["none"];
+      sel.innerHTML = "";
+      for (const id of lms) {
+        const o = document.createElement("option");
+        o.value = id;
+        o.textContent = LM_LABELS[id] || id;
+        sel.appendChild(o);
+      }
+      const def = (p && p.default_lm) || "none";
+      if ([...sel.options].some((o) => o.value === def)) sel.value = def;
+      wrap.style.display = lms.length > 1 ? "block" : "none";
+      applyLabels(p);
+    }
+    fetch("/presets").then((r) => r.json()).then((j) => {
+      for (const p of j.presets) {
+        presetMeta[p.id] = p;
+        const o = document.createElement("option");
+        o.value = p.id; o.textContent = p.label;
+        if (p.id === j.default) o.selected = true;
+        $("preset").appendChild(o);
+      }
+      syncLmOptions();
+    });
+    $("preset").onchange = () => {
+      syncLmOptions();
+      $("greedy").textContent = "";
+      $("kenlm").textContent = "";
+      $("status").textContent = "";
+    };
+    $("lm").onchange = () => {
+      applyLabels(presetMeta[$("preset").value]);
+      $("kenlm").textContent = "";
+    };
+
+    if (!window.isSecureContext && window.ASR_HTTPS) {
+      showWarn("Microphone needs HTTPS on a phone. Open <a href=\"" + window.ASR_HTTPS + "\">" + window.ASR_HTTPS + "</a> and accept the certificate warning once (Android Chrome: Advanced → Proceed).");
+    } else if (!window.isSecureContext) {
+      showWarn("This page is plain HTTP on a LAN address, so the browser blocks the microphone. Upload a recording, or use the HTTPS URL from the terminal.");
+    } else if (!canMic()) {
+      showWarn("Microphone API is unavailable here. Open this URL in Chrome/Firefox. You can still upload a wav/m4a/flac below.");
+    }
+  </script>
+</body>
+</html>
