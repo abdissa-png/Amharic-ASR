@@ -84,3 +84,9 @@ hf_cache/
 
 # Demo self-signed TLS (regenerated at startup)
 demo/.certs/
+
+# Hugging Face upload bundle (weights). Built by hand; not part of the source history.
+release/
+
+# Local helper scripts. They were not meant to be in the published tree.
+scripts/
