@@ -15,6 +15,11 @@ Decoding is greedy CTC, a prefix beam, a word KenLM (pyctcdecode), or a
 character / morpheme KenLM. The Conformer and the Zipformer both export to
 ONNX. A small local demo serves a microphone and file upload.
 
+The released graphs are
+[abdissa-png/amharic-asr-small](https://huggingface.co/abdissa-png/amharic-asr-small).
+[Amharic ASR](https://huggingface.co/spaces/abdissa-png/amharic-asr) runs them
+in the browser.
+
 
 Training text is normalised conservatively (NFC, whitespace, quotes; punctuation
 becomes a space). Ge'ez homophones are **not** folded in training. Scoring uses
@@ -219,7 +224,10 @@ python -m demo.app
 Open `http://127.0.0.1:7860`. The process also speaks HTTPS on that port so a
 phone on the same network can use the microphone. The checkpoint menu lists
 the PyTorch and ONNX models whose files are present. Weights are not in git, so
-a fresh clone shows only the presets that exist on disk.
+a fresh clone shows only the presets that exist on disk. The same graphs are
+on [abdissa-png/amharic-asr-small](https://huggingface.co/abdissa-png/amharic-asr-small),
+and the browser page is
+[Amharic ASR](https://huggingface.co/spaces/abdissa-png/amharic-asr).
 
 ## Tests
 
